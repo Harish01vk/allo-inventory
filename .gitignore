@@ -1,0 +1,8 @@
+.next/
+node_modules/
+.env.local
+.env
+*.pem
+.vercel
+dist/
+prisma/migrations/dev.db
