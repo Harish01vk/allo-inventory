@@ -2,16 +2,14 @@
 import Redis from "ioredis";
 
 const globalForRedis = globalThis as unknown as {
-  redis: Redis | undefined;
+  redis: Redis | null | undefined;
 };
 
-function createRedis(): Redis {
+function createRedis(): Redis | null {
   const url = process.env.REDIS_URL;
   if (!url) {
     console.warn("REDIS_URL not set — distributed locking disabled (dev mode)");
-    // Return a mock that always grants the lock so the app still runs locally
-    // without Redis. NOT safe for production.
-    return null as unknown as Redis;
+    return null;
   }
   const client = new Redis(url, { maxRetriesPerRequest: 3 });
   client.on("error", (err) => console.error("[Redis]", err));
