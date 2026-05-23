@@ -1,9 +1,7 @@
 "use client";
-// src/components/ProductCard.tsx
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 
 interface StockEntry {
   warehouseId: string;
@@ -18,8 +16,8 @@ interface Product {
   id: string;
   name: string;
   sku: string;
-  description: string;
-  imageUrl: string;
+  description: string | null;
+  imageUrl: string | null;
   price: number;
   stocks: StockEntry[];
 }
@@ -38,7 +36,11 @@ export default function ProductCard({ product }: { product: Product }) {
   const canReserve = available > 0 && quantity <= available;
 
   const formatPrice = (p: number) =>
-    new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(p);
+    new Intl.NumberFormat("en-IN", {
+      style: "currency",
+      currency: "INR",
+      maximumFractionDigits: 0,
+    }).format(p);
 
   async function handleReserve() {
     if (!canReserve) return;
@@ -105,7 +107,9 @@ export default function ProductCard({ product }: { product: Product }) {
       {/* Content */}
       <div className="p-5 flex flex-col flex-1">
         <h2 className="font-bold text-lg text-stone-50 leading-tight mb-1">{product.name}</h2>
-        <p className="text-stone-500 text-sm mb-4 flex-1 line-clamp-2">{product.description}</p>
+        <p className="text-stone-500 text-sm mb-4 flex-1 line-clamp-2">
+          {product.description ?? "No description available."}
+        </p>
 
         <div className="text-2xl font-bold text-amber-400 mb-4">{formatPrice(product.price)}</div>
 
@@ -154,7 +158,9 @@ export default function ProductCard({ product }: { product: Product }) {
               >
                 −
               </button>
-              <span className="font-mono text-lg font-medium text-stone-50 w-6 text-center">{quantity}</span>
+              <span className="font-mono text-lg font-medium text-stone-50 w-6 text-center">
+                {quantity}
+              </span>
               <button
                 onClick={() => setQuantity((q) => Math.min(available, q + 1))}
                 className="w-8 h-8 rounded-lg bg-stone-800 border border-stone-700 text-stone-300 hover:bg-stone-700 transition-colors flex items-center justify-center text-lg leading-none"
