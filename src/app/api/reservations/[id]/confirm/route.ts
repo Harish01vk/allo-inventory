@@ -1,15 +1,16 @@
-// src/app/api/reservations/[id]/confirm/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { getIdempotentResponse, storeIdempotentResponse } from "@/lib/idempotency";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
+    const { prisma } = await import("@/lib/prisma");
+    const { getIdempotentResponse, storeIdempotentResponse } = await import("@/lib/idempotency");
+
     const idempotencyKey = req.headers.get("Idempotency-Key");
     if (idempotencyKey) {
       const cached = await getIdempotentResponse(`confirm:${idempotencyKey}`);
@@ -36,9 +37,7 @@ export async function POST(
       return NextResponse.json({ error: "Reservation has already been released." }, { status: 410 });
     }
 
-    // Check expiry
     if (reservation.expiresAt < new Date()) {
-      // Lazily release the expired reservation
       await prisma.$transaction([
         prisma.reservation.update({
           where: { id: params.id },
@@ -52,14 +51,12 @@ export async function POST(
             AND  "warehouseId" = ${reservation.warehouseId}
         `,
       ]);
-
       return NextResponse.json(
         { error: "Reservation has expired. Please start again." },
         { status: 410 }
       );
     }
 
-    // Confirm — permanently decrement stock (reserved → confirmed, stock.reserved freed)
     const [confirmed] = await prisma.$transaction([
       prisma.reservation.update({
         where: { id: params.id, status: "PENDING" },
@@ -69,7 +66,6 @@ export async function POST(
           warehouse: { select: { name: true, location: true } },
         },
       }),
-      // Decrement both total and reserved so the units are gone for good
       prisma.$executeRaw`
         UPDATE "Stock"
         SET    total      = GREATEST(0, total - ${reservation.quantity}),

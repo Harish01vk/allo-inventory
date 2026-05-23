@@ -1,14 +1,15 @@
-// src/app/api/reservations/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function GET(
   _req: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
+    const { prisma } = await import("@/lib/prisma");
+
     const reservation = await prisma.reservation.findUnique({
       where: { id: params.id },
       include: {

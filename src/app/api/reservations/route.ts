@@ -1,13 +1,10 @@
-// src/app/api/reservations/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { acquireLock } from "@/lib/lock";
-import { getIdempotentResponse, storeIdempotentResponse } from "@/lib/idempotency";
 import { ReserveSchema } from "@/lib/schemas";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-const RESERVATION_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const RESERVATION_TTL_MS = 10 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,17 +19,14 @@ export async function POST(req: NextRequest) {
 
     const { productId, warehouseId, quantity } = parsed.data;
 
-    // ── Idempotency ─────────────────────────────────────────────────────────
+    const { getIdempotentResponse, storeIdempotentResponse } = await import("@/lib/idempotency");
     const idempotencyKey = req.headers.get("Idempotency-Key");
     if (idempotencyKey) {
       const cached = await getIdempotentResponse(idempotencyKey);
-      if (cached) {
-        return NextResponse.json(cached, { status: 200 });
-      }
+      if (cached) return NextResponse.json(cached, { status: 200 });
     }
 
-    // ── Distributed lock ─────────────────────────────────────────────────────
-    // Lock is scoped to product+warehouse so unrelated SKUs don't block each other.
+    const { acquireLock } = await import("@/lib/lock");
     const lockKey = `reserve:${productId}:${warehouseId}`;
     const releaseLock = await acquireLock(lockKey, 8_000);
     if (!releaseLock) {
@@ -43,9 +37,8 @@ export async function POST(req: NextRequest) {
     }
 
     try {
-      // ── Atomic stock check + decrement ────────────────────────────────────
-      // We use a raw SQL UPDATE with a WHERE guard on available stock.
-      // This is a single atomic operation — no TOCTOU window.
+      const { prisma } = await import("@/lib/prisma");
+
       const updated = await prisma.$executeRaw`
         UPDATE "Stock"
         SET    reserved    = reserved + ${quantity},
@@ -80,7 +73,6 @@ export async function POST(req: NextRequest) {
       });
 
       const responseBody = { reservation };
-
       if (idempotencyKey) {
         await storeIdempotentResponse(idempotencyKey, responseBody);
       }
