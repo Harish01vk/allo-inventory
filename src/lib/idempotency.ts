@@ -1,22 +1,21 @@
-// src/lib/redis.ts
-import Redis from "ioredis";
+import { redis } from "./redis";
 
-const globalForRedis = globalThis as unknown as {
-  redis: Redis | null | undefined;
-};
+const TTL_SECONDS = 86_400;
 
-function createRedis(): Redis | null {
-  const url = process.env.REDIS_URL;
-  if (!url) {
-    console.warn("REDIS_URL not set — distributed locking disabled (dev mode)");
+export async function getIdempotentResponse(key: string): Promise<object | null> {
+  if (!redis) return null;
+  const r = redis;
+  const cached = await r.get(`idempotency:${key}`);
+  if (!cached) return null;
+  try {
+    return JSON.parse(cached);
+  } catch {
     return null;
   }
-  const client = new Redis(url, { maxRetriesPerRequest: 3 });
-  client.on("error", (err) => console.error("[Redis]", err));
-  return client;
 }
 
-export const redis: Redis | null =
-  globalForRedis.redis !== undefined
-    ? globalForRedis.redis
-    : (globalForRedis.redis = createRedis());
+export async function storeIdempotentResponse(key: string, body: object): Promise<void> {
+  if (!redis) return;
+  const r = redis;
+  await r.set(`idempotency:${key}`, JSON.stringify(body), "EX", TTL_SECONDS);
+}
