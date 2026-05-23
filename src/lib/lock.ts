@@ -4,7 +4,7 @@ import { redis } from "./redis";
 const LOCK_TTL_MS = 10_000; // 10 seconds max hold
 
 /**
- * Acquire a distributed lock via Redis SET NX EX.
+ * Acquire a distributed lock via Redis SET NX PX.
  * Returns a release function, or null if the lock could not be acquired.
  *
  * When Redis is unavailable (dev without Redis), we fall back to a
@@ -21,12 +21,19 @@ export async function acquireLock(
   const token = `${Date.now()}-${Math.random()}`;
 
   if (redis) {
-    // Redis path — atomically SET key token NX EX ttl
-    const result = await redis.set(lockKey, token, "NX", "PX", ttlMs);
+    // Redis path — atomically SET key token PX ttl NX
+    const result = await redis.set(
+      lockKey,
+      token,
+      "PX",
+      ttlMs,
+      "NX"
+    );
+
     if (result !== "OK") return null;
 
     return async () => {
-      // Only delete if we still own the lock (Lua script for atomicity)
+      // Only delete if we still own the lock
       const script = `
         if redis.call("get", KEYS[1]) == ARGV[1] then
           return redis.call("del", KEYS[1])
@@ -34,18 +41,27 @@ export async function acquireLock(
           return 0
         end
       `;
+
       await redis.eval(script, 1, lockKey, token);
     };
   }
 
   // Fallback: in-memory (single-process dev only)
   if (localLocks.has(lockKey)) return null;
-  const timer = setTimeout(() => localLocks.delete(lockKey), ttlMs);
+
+  const timer = setTimeout(() => {
+    localLocks.delete(lockKey);
+  }, ttlMs);
+
   localLocks.set(lockKey, timer);
 
   return async () => {
     const t = localLocks.get(lockKey);
-    if (t) clearTimeout(t);
+
+    if (t) {
+      clearTimeout(t);
+    }
+
     localLocks.delete(lockKey);
   };
 }
