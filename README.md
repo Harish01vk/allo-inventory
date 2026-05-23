@@ -1,165 +1,505 @@
 # Allo — Inventory & Reservation Platform
 
-A Next.js application implementing race-condition-safe inventory reservations for multi-warehouse retail.
-
-## Live Demo
-
-> [Deploy your own — see hosting section below]
+A Next.js application implementing race-condition-safe inventory reservations for multi-warehouse retail and D2C brands.
 
 ---
 
-## Local Setup
+# Live Demo
 
-### Prerequisites
+### Application URL
+
+https://allo-inventory-two-pi.vercel.app
+
+### Tech Stack
+
+- Next.js 14 (App Router)
+- TypeScript
+- Prisma ORM
+- Neon PostgreSQL
+- Upstash Redis
+- Tailwind CSS
+- Zod
+
+---
+
+# Architecture Overview
+
+The system prevents overselling inventory during checkout by introducing temporary inventory reservations.
+
+A customer entering checkout receives a reservation for a limited duration (10 minutes).
+
+During that reservation:
+
+- Inventory is unavailable to other shoppers
+- Payment can complete safely
+- Inventory is either confirmed or released
+
+The system combines:
+
+1. Redis distributed locking
+2. Atomic PostgreSQL updates
+3. Reservation expiry handling
+4. Idempotent reservation APIs
+
+to guarantee correctness under concurrency.
+
+---
+
+# Features
+
+## Inventory Management
+
+- Products
+- Warehouses
+- Stock tracking per warehouse
+- Available inventory calculation
+
+## Reservation Flow
+
+- Reserve inventory
+- Confirm reservation
+- Cancel reservation
+- Automatic expiry
+
+## Concurrency Protection
+
+- Redis distributed lock (`SET NX PX`)
+- Atomic SQL stock updates
+- No overselling
+
+## User Experience
+
+- Live countdown timer
+- Real-time status updates
+- Error handling for:
+  - 409 Conflict (insufficient stock)
+  - 410 Gone (expired reservation)
+
+---
+
+# Local Setup
+
+## Prerequisites
 
 - Node.js 18+
-- A hosted Postgres database (Supabase, Neon, or Railway)
-- Optionally: a Redis instance (Upstash, Railway) — the app runs without it in single-process dev mode
+- Hosted PostgreSQL database (Neon / Supabase / Railway)
+- Redis instance (Upstash recommended)
 
-### 1. Clone & install
+---
+
+## 1. Clone Repository
 
 ```bash
-git clone <your-repo>
+git clone https://github.com/Harish01vk/allo-inventory.git
+
 cd allo-inventory
+```
+
+---
+
+## 2. Install Dependencies
+
+```bash
 npm install
 ```
 
-### 2. Environment variables
+---
+
+## 3. Environment Variables
+
+Create:
 
 ```bash
-cp .env.example .env.local
+.env.local
 ```
 
-Fill in:
+Example:
+
+```env
+DATABASE_URL="postgresql://..."
+REDIS_URL="rediss://..."
+NEXT_PUBLIC_BASE_URL="http://localhost:3000"
+CRON_SECRET="your-random-secret"
+```
+
+### Environment Variables
 
 | Variable | Description |
-|---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `REDIS_URL` | Redis URL (optional in dev) |
-| `NEXT_PUBLIC_BASE_URL` | Your deployment URL (or `http://localhost:3000` locally) |
-| `CRON_SECRET` | Random secret for the cron endpoint |
+|-----------|------------|
+| DATABASE_URL | PostgreSQL connection string |
+| REDIS_URL | Upstash Redis URL |
+| NEXT_PUBLIC_BASE_URL | Frontend base URL |
+| CRON_SECRET | Secret protecting cron endpoint |
 
-### 3. Database setup
+---
+
+## 4. Database Setup
+
+Generate Prisma client:
 
 ```bash
-npm run db:generate   # generate Prisma client
-npm run db:push       # push schema to your DB (no migration history)
-npm run db:seed       # seed sample products, warehouses, and stock
+npm run db:generate
 ```
 
-### 4. Run
+Push schema:
+
+```bash
+npm run db:push
+```
+
+Seed sample data:
+
+```bash
+npm run db:seed
+```
+
+---
+
+## 5. Start Development Server
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open:
+
+```text
+http://localhost:3000
+```
 
 ---
 
-## How the Concurrency Guarantee Works
+# API Endpoints
 
-The core challenge: if two requests arrive simultaneously for the last unit, exactly one should succeed.
+## Products
 
-### The approach: atomic SQL UPDATE with a WHERE guard
+### GET
+
+```http
+/api/products
+```
+
+Returns:
+
+- Products
+- Available stock per warehouse
+
+---
+
+## Warehouses
+
+### GET
+
+```http
+/api/warehouses
+```
+
+Returns all warehouses.
+
+---
+
+## Create Reservation
+
+### POST
+
+```http
+/api/reservations
+```
+
+Creates a reservation.
+
+Returns:
+
+```http
+201 Created
+```
+
+or
+
+```http
+409 Conflict
+```
+
+when stock is unavailable.
+
+---
+
+## Confirm Reservation
+
+### POST
+
+```http
+/api/reservations/:id/confirm
+```
+
+Confirms purchase.
+
+Returns:
+
+```http
+200 OK
+```
+
+or
+
+```http
+410 Gone
+```
+
+if reservation expired.
+
+---
+
+## Release Reservation
+
+### POST
+
+```http
+/api/reservations/:id/release
+```
+
+Releases inventory back into stock.
+
+---
+
+# Concurrency Guarantee
+
+## Problem
+
+If two customers attempt to reserve the last item simultaneously:
+
+- Exactly one reservation should succeed
+- Exactly one reservation should fail
+
+---
+
+## Solution
+
+### Redis Distributed Lock
+
+A lock is acquired using:
+
+```redis
+SET lock:<product>:<warehouse> token NX PX 8000
+```
+
+This guarantees only one reservation attempt proceeds at a time.
+
+---
+
+### Atomic SQL Update
 
 ```sql
 UPDATE "Stock"
-SET    reserved    = reserved + $quantity,
-       "updatedAt" = NOW()
-WHERE  "productId"   = $productId
-  AND  "warehouseId" = $warehouseId
-  AND  (total - reserved) >= $quantity   -- stock check is part of the UPDATE
+SET reserved = reserved + $quantity
+WHERE productId = $productId
+  AND warehouseId = $warehouseId
+  AND (total - reserved) >= $quantity;
 ```
 
-Postgres executes this as a single atomic operation with row-level locking. If two concurrent transactions both run this update:
-- The first one acquires the row lock, checks the condition, and succeeds
-- The second one waits, then re-evaluates the condition after the first commits — and sees `available = 0`, so `affected rows = 0`
+This update is atomic.
 
-We return 409 whenever `affected rows = 0`.
+PostgreSQL row-level locking guarantees:
 
-**No TOCTOU window** — there is no separate SELECT-then-UPDATE that could be raced between.
-
-### Distributed lock (belt-and-suspenders)
-
-For extra safety (and to avoid DB-level lock contention under very high concurrency), a Redis `SET NX PX` lock is acquired per `(productId, warehouseId)` before the SQL update. This ensures only one goroutine at a time attempts the atomic update for a given SKU/warehouse combination. The lock is released in a `finally` block and expires automatically after 8 seconds.
-
-**Without Redis** (dev mode): the lock falls back to an in-process `Map`, which is safe for single-instance development.
+- First request succeeds
+- Second request rechecks stock after lock release
+- Second request receives 409 if inventory is exhausted
 
 ---
 
-## Reservation Expiry
+## Why This Prevents Overselling
 
-Reservations expire after 10 minutes if not confirmed. Units are returned to available stock.
+There is no:
 
-### Two complementary mechanisms
-
-**1. Vercel Cron (production)**
-
-`vercel.json` schedules `GET /api/cron/release-expired` every minute. This calls `releaseExpiredReservations()` which:
-- Finds all `PENDING` reservations with `expiresAt < NOW()`
-- Updates their status to `RELEASED` in a transaction
-- Decrements `Stock.reserved` for each
-
-Protected by `Authorization: Bearer <CRON_SECRET>` to prevent public abuse.
-
-**2. Lazy cleanup on product listing**
-
-Every `GET /api/products` call also triggers `releaseExpiredReservations()`. This means even without a cron job, stock eventually becomes visible as soon as the products page is loaded — a useful safety net for local dev and edge cases.
-
----
-
-## Idempotency (Bonus)
-
-The `POST /api/reservations` and `POST /api/reservations/:id/confirm` endpoints support idempotency via the `Idempotency-Key` header.
-
-### Implementation
-
-1. **On request**: check Redis for `idempotency:<key>`. If found, return the cached response immediately.
-2. **On success**: store the response body in Redis at `idempotency:<key>` with a 24-hour TTL.
-
-This means a client that retries after a timeout (e.g., 3DS redirect) gets the original reservation back instead of creating a duplicate or double-confirming.
-
-**Without Redis**: idempotency is silently skipped (still correct, just not idempotent).
-
----
-
-## Hosting
-
-| Service | Purpose | Free tier |
-|---|---|---|
-| [Vercel](https://vercel.com) | Next.js hosting + cron | Yes |
-| [Supabase](https://supabase.com) or [Neon](https://neon.tech) | Postgres | Yes |
-| [Upstash](https://upstash.com) | Redis | Yes |
-
-Deploy:
-```bash
-vercel deploy
+```text
+SELECT stock
+UPDATE stock
 ```
 
-Set env vars in Vercel dashboard, then:
-```bash
-# Run migrations against production DB
-DATABASE_URL="<prod-url>" npm run db:push
-DATABASE_URL="<prod-url>" npm run db:seed
+race condition.
+
+The stock validation and modification happen inside the same SQL statement.
+
+This eliminates TOCTOU (Time Of Check Time Of Use) bugs.
+
+---
+
+# Reservation Expiry
+
+Reservations automatically expire after:
+
+```text
+10 minutes
 ```
 
 ---
 
-## Trade-offs & What I'd Do Differently
+## Production Cleanup
 
-### Current trade-offs
+Vercel Cron invokes:
 
-- **No auth**: Any user can reserve, confirm, or release any reservation by ID. In production, reservations would be tied to a user/session/order.
-- **10-minute fixed TTL**: Reasonable for a payment flow but should be configurable per product or flow type.
-- **Lazy expiry only fires on /api/products**: If no one visits the listing, very old reservations don't get swept up until the cron job runs. For an SLA-sensitive system, I'd add a dedicated background worker.
-- **No retry with backoff on the 429**: The frontend just shows an error if the lock is contested. A proper client would do exponential backoff.
-- **Stock model is simple**: No concept of allocated vs. soft-allocated vs. in-transit. A real WMS would be much richer.
+```http
+/api/cron/release-expired
+```
 
-### With more time
+every minute.
 
-- Session-tied reservations with a proper order model
-- Webhook/event stream so the product page stock numbers update in real time (Server-Sent Events or Supabase Realtime)
-- End-to-end integration tests using Vitest + Prisma test database
-- Optimistic UI updates with rollback on the product listing
-- Admin dashboard for warehouse staff to adjust stock levels
+Expired reservations:
+
+1. Change status → RELEASED
+2. Return reserved units to stock
+
+---
+
+## Lazy Cleanup
+
+Every:
+
+```http
+GET /api/products
+```
+
+also triggers cleanup.
+
+Benefits:
+
+- Works locally
+- Handles missed cron executions
+- Ensures inventory eventually becomes available
+
+---
+
+# Idempotency (Bonus)
+
+Supported endpoints:
+
+```http
+POST /api/reservations
+POST /api/reservations/:id/confirm
+```
+
+via:
+
+```http
+Idempotency-Key
+```
+
+header.
+
+---
+
+## Flow
+
+### First Request
+
+- Operation executes
+- Response cached in Redis
+
+### Retry Request
+
+- Same key detected
+- Cached response returned
+
+No duplicate reservations.
+
+No duplicate confirmations.
+
+---
+
+# Hosting
+
+## Production Deployment
+
+### Frontend
+
+Vercel
+
+https://allo-inventory-two-pi.vercel.app
+
+### Database
+
+Neon PostgreSQL
+
+### Cache / Locking
+
+Upstash Redis
+
+---
+
+# Trade-offs
+
+## Current Limitations
+
+### No Authentication
+
+Reservations are not tied to users.
+
+Production systems should associate:
+
+- Customer
+- Session
+- Order
+
+with each reservation.
+
+---
+
+### Fixed Reservation TTL
+
+Current:
+
+```text
+10 minutes
+```
+
+Should be configurable.
+
+---
+
+### Simplified Stock Model
+
+Current stock model:
+
+- Total
+- Reserved
+
+Production WMS systems typically include:
+
+- Allocated
+- Picked
+- Packed
+- In-transit
+- Damaged
+
+---
+
+# Future Improvements
+
+Given additional time:
+
+- User authentication
+- Order management system
+- Real-time stock updates via WebSockets/SSE
+- Automated integration testing
+- Admin dashboard
+- Inventory analytics
+- Multi-region warehouse support
+- Reservation audit history
+
+---
+
+# Repository
+
+GitHub:
+
+https://github.com/Harish01vk/allo-inventory
+
+---
+
+# Author
+
+Harish M
+
+VIT Chennai
+
+B.Tech Computer Science and Engineering
