@@ -1,13 +1,8 @@
-// src/app/api/cron/release-expired/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { releaseExpiredReservations } from "@/lib/expiry";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-/**
- * Called by Vercel Cron every minute (see vercel.json).
- * Protected by CRON_SECRET to prevent public abuse.
- */
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
   const secret = process.env.CRON_SECRET;
@@ -17,6 +12,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const { releaseExpiredReservations } = await import("@/lib/expiry");
     const released = await releaseExpiredReservations();
     return NextResponse.json({ released, ok: true });
   } catch (err) {
